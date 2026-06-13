@@ -27,7 +27,7 @@ Outputs:
 
 Five HQ fold model checkpoints are included under `checkpoints/`. Inference
 runs all five models and averages their PWM probabilities. The template library
-is not included because it is large. Download `HomoDSP_DataSet` separately and
+is not included because it is large. Download [HomoDSP_DataSet](https://doi.org/10.5281/zenodo.20675636) separately and
 set these paths in `config/inference_config.json`:
 
 ```json
