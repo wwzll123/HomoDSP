@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "homodsp-inference"
+version = "0.1.0"
+description = "Inference-only HomoDSP PWM prediction from protein-DNA complex structures"
+requires-python = ">=3.10"
+
+[tool.setuptools]
+packages = ["homodsp", "homodsp.models", "homodsp.templates", "deeppbs", "deeppbs.nn", "deeppbs.nn.layers", "deeppbs.nn.metrics", "deeppbs.nn.utils"]

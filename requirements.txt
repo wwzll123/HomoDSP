@@ -1,0 +1,11 @@
+numpy==1.26.4
+scipy==1.17.1
+scikit-learn==1.7.1
+torch==2.7.1
+torch-geometric==2.7.0
+torch-cluster==1.6.3+pt27cu126
+biopython==1.85
+biotite==1.4.0
+matplotlib==3.10.5
+seaborn==0.13.2
+tqdm==4.67.1
