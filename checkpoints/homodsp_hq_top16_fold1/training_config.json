@@ -1,0 +1,43 @@
+{
+  "data_dir": "/root/autodl-tmp/deeppbsmar24/run/homodsp_cv/work/templates_hq/fold0/aug_npz",
+  "output_path": "/root/autodl-tmp/deeppbsmar24/run/homodsp_cv/work/training_hq/fold1/output",
+  "nc": 4,
+  "labels_key": "Y_pwm",
+  "cache_dataset": false,
+  "epochs": 50,
+  "batch_size": 1,
+  "condition": "prot_shape",
+  "readout": "all",
+  "use_templates": true,
+  "template_encoder_type": "interface",
+  "template_node_channels": 92,
+  "template_hidden": 8,
+  "template_top_k": 16,
+  "template_max_nodes": 32,
+  "template_cutoff": 10.0,
+  "template_contact_cutoff": 5.0,
+  "template_aligned_residue_mode": "soft",
+  "ic_loss_weight": 0,
+  "mse_loss_weight": 1,
+  "remove_zero_class": false,
+  "best_state_metric": "mae",
+  "best_state_metric_goal": "min",
+  "best_state_metric_threshold": 1.0,
+  "best_state_metric_dataset": "validation",
+  "model": {
+    "transform_args": []
+  },
+  "optimizer": {
+    "name": "adam",
+    "kwargs": {
+      "lr": 0.001,
+      "weight_decay": 0.0001
+    }
+  },
+  "scheduler": {
+    "name": "",
+    "kwargs": {}
+  },
+  "tensorboard": true,
+  "write_test_predictions": false
+}
