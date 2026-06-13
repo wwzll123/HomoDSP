@@ -1,0 +1,55 @@
+{
+  "model": {
+    "ensemble": [
+      {
+        "name": "fold0",
+        "checkpoint": "checkpoints/homodsp_hq_top16_fold0/Model.best.tar",
+        "scaler": "checkpoints/homodsp_hq_top16_fold0/scaler.pkl"
+      },
+      {
+        "name": "fold1",
+        "checkpoint": "checkpoints/homodsp_hq_top16_fold1/Model.best.tar",
+        "scaler": "checkpoints/homodsp_hq_top16_fold1/scaler.pkl"
+      },
+      {
+        "name": "fold2",
+        "checkpoint": "checkpoints/homodsp_hq_top16_fold2/Model.best.tar",
+        "scaler": "checkpoints/homodsp_hq_top16_fold2/scaler.pkl"
+      },
+      {
+        "name": "fold3",
+        "checkpoint": "checkpoints/homodsp_hq_top16_fold3/Model.best.tar",
+        "scaler": "checkpoints/homodsp_hq_top16_fold3/scaler.pkl"
+      },
+      {
+        "name": "fold4",
+        "checkpoint": "checkpoints/homodsp_hq_top16_fold4/Model.best.tar",
+        "scaler": "checkpoints/homodsp_hq_top16_fold4/scaler.pkl"
+      }
+    ],
+    "nc": 4,
+    "labels_key": "Y_pwm",
+    "balance": "unmasked",
+    "condition": "prot_shape",
+    "readout": "all",
+    "use_templates": true,
+    "template_encoder_type": "interface",
+    "template_node_channels": 92,
+    "template_hidden": 8,
+    "protein_channels": 13,
+    "dna_channels": 14
+  },
+  "templates": {
+    "template_cif_dir": "/path/to/HomoDSP_DataSet/protenix_high_quality_cifs_iptm0.4_ptm0.5",
+    "foldseek_db": "/path/to/HomoDSP_DataSet/foldseek_db/protenix_high_quality_iptm0.4_ptm0.5",
+    "foldseek": "foldseek",
+    "top_k": 16,
+    "max_template_nodes": 32,
+    "cutoff": 10.0,
+    "contact_cutoff": 5.0,
+    "aligned_residue_mode": "soft",
+    "flank": 5,
+    "threads": 4,
+    "jobs": 1
+  }
+}
