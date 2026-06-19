@@ -105,3 +105,21 @@ python -m homodsp.process_complex input_list.csv process_config.json --no_pwm --
 
 The included default corresponds to the five HQ fold models trained with top-16
 interface templates.
+
+
+## Cite
+
+```
+@article {Zeng2026.06.16.732781,
+	author = {Zeng, Wenwu and Zou, Haitao and Li, Xiaoyu and Liu, Yaoyu and Xu, Liwen and Wang, Xiaoqi and Peng, Shaoliang},
+	title = {DNA-binding specificity recognition from predicted homologous protein-DNA structures},
+	elocation-id = {2026.06.16.732781},
+	year = {2026},
+	doi = {10.64898/2026.06.16.732781},
+	publisher = {Cold Spring Harbor Laboratory},
+	URL = {https://www.biorxiv.org/content/early/2026/06/17/2026.06.16.732781},
+	eprint = {https://www.biorxiv.org/content/early/2026/06/17/2026.06.16.732781.full.pdf},
+	journal = {bioRxiv}
+}
+
+```
