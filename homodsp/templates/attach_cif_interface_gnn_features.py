@@ -575,6 +575,7 @@ def main():
     parser.add_argument("--query-npz", required=True)
     parser.add_argument("--hits", required=True)
     parser.add_argument("--cif-dir", required=True)
+    parser.add_argument("--additional-cif-dir", action="append", default=[])
     parser.add_argument("--out", required=True)
     parser.add_argument("--top-k", type=int, default=4)
     parser.add_argument("--max-nodes", type=int, default=32)
@@ -584,7 +585,7 @@ def main():
     args = parser.parse_args()
 
     query_path = Path(args.query_npz)
-    cif_dir = Path(args.cif_dir)
+    cif_dirs = [Path(args.cif_dir), *map(Path, args.additional_cif_dir)]
     query_arrays = np.load(query_path, allow_pickle=True)
     query_len = int(query_arrays["X_dna"].shape[0])
     query_seq = query_sequence_from_arrays(query_arrays)
@@ -601,10 +602,10 @@ def main():
 
     used = []
     for i, hit in enumerate(hits[: args.top_k]):
-        cif_path = cif_dir / f"{hit['stem']}.cif"
-        if not cif_path.exists():
-            print(f"[WARN] template CIF missing: {cif_path}")
-            continue
+        filename = f"{hit['stem']}.cif"
+        cif_path = next((directory / filename for directory in cif_dirs if (directory / filename).is_file()), None)
+        if cif_path is None:
+            raise FileNotFoundError(f"Foldseek hit {filename} is missing from the configured template directories")
         try:
             template_dna_residues, protein_residues = parse_complex_cif(cif_path)
             alignment_map = {}

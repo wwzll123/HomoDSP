@@ -12,6 +12,7 @@ from sklearn.preprocessing import StandardScaler
 
 # deeppbs modules
 from deeppbs.nn.utils import balancedClassIndices
+from deeppbs.template_schema import FEATURE_NAMES as INTERFACE_FEATURE_NAMES
 
 class NodeScaler(object):
     def __init__(self):
@@ -190,6 +191,11 @@ def _processData(data_files, nc, labels_key,
             optional_template_tensors["template_node_x"] = torch.tensor(
                 data_arrays["template_node_x"], dtype=torch.float32
             )
+            schema_matches = (
+                "template_node_feature_names" in data_arrays.files
+                and data_arrays["template_node_feature_names"].astype(str).tolist() == INTERFACE_FEATURE_NAMES
+            )
+            optional_template_tensors["template_interface92_schema"] = torch.tensor([schema_matches], dtype=torch.bool)
         if "template_node_mask" in data_arrays.files:
             optional_template_tensors["template_node_mask"] = torch.tensor(
                 data_arrays["template_node_mask"], dtype=torch.bool

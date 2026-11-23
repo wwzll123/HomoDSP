@@ -8,6 +8,10 @@ from deeppbs.nn import MLP
 from torch_geometric.nn import CGConv, DynamicEdgeConv
 from torch_cluster import radius, radius_graph
 from deeppbs.nn import ProtEncoder, BiNet
+from .template_geometry import (TemplateGeometryEncoder, DynamicTemplateGeometryEncoder,
+                                ResidualSequenceCNN)
+from deeppbs.template_schema import DNA_INDICES
+from .query_geometry import RadialQueryProteinEncoder
 
 class CNN(nn.Module):
     def __init__(self, dna_channels, hidden_size=8, condition="full"): 
@@ -143,28 +147,42 @@ class Model(nn.Module):
             self.fn_channels = 0
         
         self.name = "Model"
-        self.hidden_size = 8
+        self.hidden_size = int(kwargs.get("fusion_hidden", 8))
+        self.fusion_depth = int(kwargs.get("fusion_depth", 0))
         self.dna_channels = dna_channels
         self.binet_reduce_channels = 32
-        self.dna_embed_dim = 10
+        self.dna_embed_dim = int(kwargs.get("query_dna_hidden", 10))
         self.dropout = 0.0
-        self.prot_embed_dim = 10
+        self.prot_embed_dim = int(kwargs.get("query_prot_hidden", 10))
         self.conv = None #for visualizing conv output
         self.use_templates = kwargs.get("use_templates", False)
+        self.template_fusion = kwargs.get("template_fusion", "concat")
+        if self.template_fusion not in {"concat", "add"}:
+            raise ValueError("template_fusion must be concat or add")
         self.template_hidden = kwargs.get("template_hidden", 8)
         self.template_channels = kwargs.get("template_channels", dna_channels)
         self.template_node_channels = kwargs.get("template_node_channels", 92)
         self.template_encoder_type = kwargs.get("template_encoder_type", "feature")
+        if self.template_encoder_type not in {"feature", "interface", "geometry", "dynamic_geometry"}:
+            raise ValueError("Unknown template_encoder_type: " + str(self.template_encoder_type))
+        if self.template_encoder_type in {"geometry", "dynamic_geometry"} and (not self.use_templates or condition == "shape"):
+            raise ValueError("Geometry template encoder requires an active template and query interaction branch")
         self.use_uq_head = kwargs.get("use_uq_head", False)
-        self.uq_global_output_dim = kwargs.get("uq_global_output_dim", 2)
-        self.uq_global_hidden = kwargs.get("uq_global_hidden", self.hidden_size)
-        self.uq_global_depth = kwargs.get("uq_global_depth", 1)
-        self.uq_global_dropout = kwargs.get("uq_global_dropout", 0.0)
 
         self.embed = MLP([11 + self.fn_channels, self.dna_embed_dim, self.dna_embed_dim],
                 dropout=self.dropout)
         
-        self.prot_encoder = ProtEncoder(prot_channels, self.prot_embed_dim, condition=self.condition)
+        self.query_encoder_type = kwargs.get("query_encoder_type", "legacy")
+        if self.query_encoder_type == "radial":
+            self.prot_encoder = RadialQueryProteinEncoder(
+                prot_channels, self.prot_embed_dim,
+                radius=kwargs.get("query_graph_radius", 4.0),
+                rbf_bins=kwargs.get("query_rbf_bins", 16),
+                max_neighbors=kwargs.get("query_max_neighbors", 32))
+        elif self.query_encoder_type == "legacy":
+            self.prot_encoder = ProtEncoder(prot_channels, self.prot_embed_dim, condition=self.condition)
+        else:
+            raise ValueError("Unknown query encoder: " + self.query_encoder_type)
 
         self.binet = BiNet(self.prot_embed_dim, self.dna_embed_dim, condition=self.condition,
         conv="PPFConv", readout=readout) # +dna_channels
@@ -172,14 +190,48 @@ class Model(nn.Module):
         self.reduce_nn = MLP([11*self.dna_embed_dim, 2*self.binet_reduce_channels,
             self.binet_reduce_channels], dropout=self.dropout)
 
-        template_extra_channels = self.template_hidden if self.use_templates else 0
+        template_extra_channels = self.template_hidden if self.use_templates and self.template_fusion == "concat" else 0
+        query_channels = self.binet_reduce_channels + (
+            self.dna_channels if self.condition in ["prot_shape", "prot_shape_ag", "shape_ag"] else 0)
         if self.use_templates:
-            if self.template_encoder_type == "interface":
+            if self.template_encoder_type == "dynamic_geometry":
+                self.template_encoder = DynamicTemplateGeometryEncoder(
+                    self.template_node_channels, query_channels, self.template_hidden,
+                    layers=kwargs.get("template_layers", 3),
+                    include_dna_identity=kwargs.get("template_include_dna_identity", True),
+                    dropout=kwargs.get("template_dropout", 0.1),
+                    radius=kwargs.get("template_graph_radius", 8.0),
+                    neighbors=kwargs.get("template_graph_neighbors", 8),
+                    rbf_bins=kwargs.get("template_rbf_bins", 8),
+                    chunk_size=kwargs.get("template_graph_chunk_size", 64),
+                    score_prior=kwargs.get("template_score_prior", 0.0),
+                    coord_step=kwargs.get("template_coord_step", 0.25),
+                    edge_hidden=kwargs.get("template_edge_hidden", 32))
+            elif self.template_encoder_type == "geometry":
+                self.template_encoder = TemplateGeometryEncoder(
+                    self.template_node_channels, query_channels, self.template_hidden,
+                    layers=kwargs.get("template_layers", 3),
+                    include_dna_identity=kwargs.get("template_include_dna_identity", True),
+                    dropout=kwargs.get("template_dropout", 0.1),
+                    radius=kwargs.get("template_graph_radius", 8.0),
+                    neighbors=kwargs.get("template_graph_neighbors", 8),
+                    rbf_bins=kwargs.get("template_rbf_bins", 8),
+                    chunk_size=kwargs.get("template_graph_chunk_size", 64),
+                    score_prior=kwargs.get("template_score_prior", 0.0))
+            elif self.template_encoder_type == "interface":
                 self.template_encoder = TemplateInterfaceEncoder(self.template_node_channels, self.template_hidden)
             else:
                 self.template_encoder = TemplateEncoder(self.template_channels, self.template_hidden)
 
-        if self.condition in ["prot_ag", "prot", "ag"]:
+        if self.use_templates and self.template_fusion == "add":
+            # No bias: absent template embeddings must give exactly zero correction.
+            self.template_projection = nn.Linear(self.template_hidden, query_channels, bias=False)
+
+        if self.fusion_depth > 0:
+            self.cnn = ResidualSequenceCNN(
+                query_channels + template_extra_channels, self.hidden_size,
+                depth=self.fusion_depth, dropout=kwargs.get("fusion_dropout", 0.1))
+        elif self.condition in ["prot_ag", "prot", "ag"]:
             self.cnn = CNN(self.binet_reduce_channels + template_extra_channels, hidden_size=self.hidden_size,
                     condition=self.condition)
         elif self.condition in ["prot_shape","prot_shape_ag","shape_ag"]:
@@ -193,16 +245,11 @@ class Model(nn.Module):
         if self.use_uq_head:
             self.local_uq_head = MLP([self.hidden_size, self.hidden_size, 1], dropout=self.dropout)
             self.global_uq_feature_dim = 2 * self.hidden_size + 12
-            global_layers = []
-            in_dim = self.global_uq_feature_dim
-            for _ in range(self.uq_global_depth):
-                global_layers.append(nn.Linear(in_dim, self.uq_global_hidden))
-                global_layers.append(nn.ReLU())
-                if self.uq_global_dropout > 0:
-                    global_layers.append(nn.Dropout(self.uq_global_dropout))
-                in_dim = self.uq_global_hidden
-            global_layers.append(nn.Linear(in_dim, self.uq_global_output_dim))
-            self.global_uq_head = nn.Sequential(*global_layers)
+            self.global_uq_head = nn.Sequential(
+                nn.Linear(self.global_uq_feature_dim, self.hidden_size),
+                nn.ReLU(),
+                nn.Linear(self.hidden_size, 2)
+            )
        
         #self.groove_cnn = CNN(self.dna_embed_dim, hidden_size=4, condition=self.condition,
         #            kernel_size=7)
@@ -218,7 +265,7 @@ class Model(nn.Module):
         #        kernel_size=3, padding='same')
 
         self.global_temp = nn.Parameter(torch.randn(1))
-        self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+
         self.outnn = MLP([8,4,4])
 
     def strandForward(self, e_prot, v_dna, x_dna, x_dna_point, 
@@ -254,7 +301,12 @@ class Model(nn.Module):
                 #x_binet = torch.hstack((x_binet, torch.zeros_like(x_dna)))
 
             if self.use_templates:
-                if self.template_encoder_type == "interface":
+                if self.template_encoder_type in {"geometry", "dynamic_geometry"}:
+                    template_embed = self.template_encoder(
+                        template_node_x, query_features=x_binet,
+                        template_node_mask=template_node_mask,
+                        template_scores=template_scores)
+                elif self.template_encoder_type == "interface":
                     if template_node_x is not None:
                         template_embed = self.template_encoder(
                             template_node_x,
@@ -277,7 +329,10 @@ class Model(nn.Module):
                         length=x_binet.shape[0],
                         device=x_binet.device
                     )
-                x_binet = torch.hstack((x_binet, template_embed))
+                if self.template_fusion == "add":
+                    x_binet = x_binet + self.template_projection(template_embed)
+                else:
+                    x_binet = torch.hstack((x_binet, template_embed))
             
             #x_bbone = x_bbone.unsqueeze(0)
             #x_bbone = self.bbone_shape_cnn(x_bbone).T
@@ -299,7 +354,11 @@ class Model(nn.Module):
         #except:
         return x_dna, conv, x_dnacnn
 
-    def forward(self, data):
+    def forward(self, data, return_features=False):
+        if self.template_encoder_type in {"geometry", "dynamic_geometry"}:
+            schema = getattr(data, "template_interface92_schema", None)
+            if schema is None or not bool(schema.all()):
+                raise ValueError("Geometry encoder requires verified interface92 feature names in the NPZ")
         x_dna_point = data.x_dna_point[:,:(11 + self.fn_channels)]
         template_x = getattr(data, "template_x_dna", None)
         template_mask = getattr(data, "template_mask", None)
@@ -314,7 +373,7 @@ class Model(nn.Module):
 
         x_dna_point = x_dna_point.reshape(-1, 11, 11 + self.fn_channels)
         
-        switch = torch.LongTensor([10,9,5,4,3,2,8,7,6,1,0]).to(self.device)
+        switch = torch.LongTensor([10,9,5,4,3,2,8,7,6,1,0]).to(data.v_dna.device)
         x_dna_point_rc = torch.index_select(x_dna_point, 1, switch)
         v_dna_rc = torch.index_select(data.v_dna, 1, switch)
         dna_vecs_rc = torch.index_select(data.dna_vecs, 1, switch)
@@ -325,7 +384,7 @@ class Model(nn.Module):
         dna_vecs_rc = torch.flip(dna_vecs_rc, [0])
         
         shape_transform = torch.LongTensor([-1, -1, 1, 1, 1, 1, -1, 1, 1, -1, 1, 1, 1,
-            1]).to(self.device)
+            1]).to(data.v_dna.device)
 
         x_dna_rc = torch.flip(data.x_dna, [0])*shape_transform[None, :]
         
@@ -343,6 +402,10 @@ class Model(nn.Module):
         template_node_mask_rc = None
         if template_node_x is not None:
             template_node_x_rc = torch.flip(template_node_x, [1])
+            if self.template_encoder_type in {"geometry", "dynamic_geometry"}:
+                # Preserve frame geometry; explicit base identity follows strand orientation.
+                template_node_x_rc = template_node_x_rc.clone()
+                template_node_x_rc[..., DNA_INDICES] = template_node_x_rc[..., [DNA_INDICES[i] for i in [3, 2, 1, 0, 4]]]
         if template_node_mask is not None:
             template_node_mask_rc = torch.flip(template_node_mask, [1])
 
@@ -352,6 +415,8 @@ class Model(nn.Module):
 
         #out = (out1 + out2.flip([0,1]))/2
         logits = torch.cat((out1, out2), dim=0) / torch.sigmoid(self.global_temp)
+        if return_features:
+            return logits, torch.cat((feat1, feat2), dim=0)
         if not self.use_uq_head:
             return logits
 

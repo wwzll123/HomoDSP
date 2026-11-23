@@ -6,10 +6,12 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import pickle
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -24,14 +26,32 @@ from deeppbs import oneHotToSeq
 from deeppbs.nn import processBatch
 from deeppbs.nn.utils import loadDataset
 from homodsp.models.model_v2 import Model
+from homodsp.models.template_geometry import architecture_kwargs
+from deeppbs.template_schema import FEATURE_NAMES
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def load_config(path: Path) -> dict:
+def load_config(path: Path, variant: str | None = None) -> dict:
     with path.open("r", encoding="utf-8") as handle:
         config = json.load(handle)
+    variants = config.get("model_variants", {})
+    if variants or variant is not None:
+        name = variant or config["default_variant"]
+        if name not in variants:
+            raise ValueError(f"Unknown model variant {name!r}. Available: {', '.join(variants)}")
+        settings = variants[name]
+        model = config["model"]
+        model["template_include_dna_identity"] = settings["template_include_dna_identity"]
+        directory = Path(settings["checkpoint_dir"])
+        model["ensemble"] = [
+            {"name": f"fold{i}", "checkpoint": str(directory / f"fold{i}/Model.best.tar"),
+             "scaler": str(directory / f"fold{i}/scaler.pkl"),
+             "protein_scaler": str(directory / f"fold{i}/protein_scaler.pkl")}
+            for i in range(5)
+        ]
+        config["selected_variant"] = name
     return config
 
 
@@ -81,16 +101,6 @@ def process_complex(input_path: Path, sample_id: str, base_npz_dir: Path, no_cle
     list_path = base_npz_dir.parent / "input_list.csv"
     config_path = base_npz_dir.parent / "process_config.json"
     list_path.write_text(copied_input.name + "\n", encoding="utf-8")
-    config_path.write_text(
-        json.dumps(
-            {
-                "PDB_FILES_PATH": str(input_dir),
-                "FEATURE_DATA_PATH": str(base_npz_dir),
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
     cmd = [
         sys.executable,
         "-m",
@@ -102,13 +112,19 @@ def process_complex(input_path: Path, sample_id: str, base_npz_dir: Path, no_cle
     ]
     if no_cleanp:
         cmd.append("--no_cleanp")
-    run_command(cmd)
-    produced = base_npz_dir / f"{copied_input.stem}.npz"
     target = base_npz_dir / f"{sample_id}.npz"
-    if produced.exists() and produced != target:
+    # The structure tools use fixed scratch filenames and may exit without an NPZ.
+    with tempfile.TemporaryDirectory(dir=base_npz_dir) as scratch:
+        config_path.write_text(json.dumps({"PDB_FILES_PATH": str(input_dir),
+                                           "FEATURE_DATA_PATH": scratch}), encoding="utf-8")
+        # Make the source checkout importable from the isolated work directory.
+        env = os.environ.copy()
+        env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(REPO_ROOT), env.get("PYTHONPATH")]))
+        subprocess.run(cmd, cwd=scratch, env=env, check=True)
+        produced = Path(scratch) / f"{copied_input.stem}.npz"
+        if not produced.is_file():
+            raise RuntimeError(f"DeepPBS feature generation failed for {input_path}")
         produced.replace(target)
-    if not target.exists():
-        raise FileNotFoundError(f"DeepPBS feature generation did not produce {target}")
     return target
 
 
@@ -168,7 +184,15 @@ def attach_templates(base_npz: Path, input_path: Path, sample_id: str, out_dir: 
         "--jobs",
         str(template_cfg.get("jobs", 1)),
     ]
+    for directory in template_cfg.get("additional_cif_dirs", []):
+        path = resolve_path(directory)
+        if not path.is_dir():
+            raise FileNotFoundError(f"Additional template CIF directory does not exist: {path}")
+        cmd.extend(["--additional-cif-dir", str(path)])
     run_command(cmd)
+    summary = json.loads((template_work / "summary.json").read_text())
+    if not any(record["query"] == base_npz.name for record in summary):
+        raise RuntimeError(f"Template retrieval failed for {base_npz.name}")
     augmented = template_work / "aug_npz" / base_npz.name
     if not augmented.exists():
         raise FileNotFoundError(f"Template augmentation did not produce {augmented}")
@@ -186,6 +210,10 @@ def predict_one_member(npz_path: Path, model_cfg: dict, member_cfg: dict, device
 
     with scaler_path.open("rb") as handle:
         scaler = pickle.load(handle)
+    protein_scaler = None
+    if "protein_scaler" in member_cfg:
+        with resolve_path(member_cfg["protein_scaler"]).open("rb") as handle:
+            protein_scaler = pickle.load(handle)
 
     dataset, _, _, datafiles = loadDataset(
         [npz_path.name],
@@ -197,6 +225,7 @@ def predict_one_member(npz_path: Path, model_cfg: dict, member_cfg: dict, device
         remove_mask=False,
         scale=True,
         scaler=scaler,
+        protein_scaler=protein_scaler,
         pre_transform=None,
         feature_mask=None,
     )
@@ -220,6 +249,7 @@ def predict_one_member(npz_path: Path, model_cfg: dict, member_cfg: dict, device
         template_hidden=int(model_cfg.get("template_hidden", 8)),
         template_encoder_type=template_encoder_type,
         template_node_channels=template_node_channels,
+        **architecture_kwargs(model_cfg),
     )
     state = torch.load(checkpoint, map_location=device)
     model.load_state_dict(state["model_state_dict"])
@@ -273,6 +303,7 @@ def main() -> None:
     parser.add_argument("input", help="Protein-DNA complex in PDB or mmCIF format.")
     parser.add_argument("-o", "--out-dir", default="homodsp_prediction", help="Output directory.")
     parser.add_argument("-c", "--config", default=str(REPO_ROOT / "config/inference_config.json"))
+    parser.add_argument("--variant", help="Checkpoint set: template-dna (default) or no-template-dna.")
     parser.add_argument("--sample-id", help="Optional sample id. Defaults to input stem.")
     parser.add_argument("--device", default="", help="Torch device, e.g. cuda:0 or cpu.")
     parser.add_argument("--skip-templates", action="store_true", help="Run the no-template model path if configured.")
@@ -282,7 +313,7 @@ def main() -> None:
     input_path = Path(args.input).expanduser().resolve()
     if not input_path.exists():
         raise FileNotFoundError(input_path)
-    config = load_config(Path(args.config).expanduser().resolve())
+    config = load_config(Path(args.config).expanduser().resolve(), args.variant)
     sample_id = args.sample_id or input_path.stem
     out_dir = Path(args.out_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -292,6 +323,18 @@ def main() -> None:
     infer_npz = base_npz
     if config.get("model", {}).get("use_templates", True) and not args.skip_templates:
         infer_npz = attach_templates(base_npz, input_path, sample_id, work_dir, config)
+    elif args.skip_templates and config["model"].get("template_encoder_type") == "dynamic_geometry":
+        # Preserve the same empty-slot representation as a zero-hit Foldseek search.
+        with np.load(base_npz, allow_pickle=True) as data:
+            arrays = dict(data)
+        slots = config["templates"]["top_k"]
+        shape = (slots, len(arrays["X_dna"]), config["templates"]["max_template_nodes"])
+        infer_npz = work_dir / base_npz.name
+        np.savez_compressed(infer_npz, **arrays,
+                            template_node_x=np.zeros((*shape, len(FEATURE_NAMES)), dtype=np.float32),
+                            template_node_mask=np.zeros(shape, dtype=bool),
+                            template_scores=np.zeros(slots, dtype=np.float32),
+                            template_node_feature_names=np.asarray(FEATURE_NAMES))
 
     pwm, seq = predict_npz(infer_npz, sample_id, out_dir, config, args.device)
     np.save(out_dir / f"{sample_id}_pwm.npy", pwm)
@@ -300,6 +343,7 @@ def main() -> None:
     np.savetxt(out_dir / f"{sample_id}_pwm.tsv", pwm, delimiter="\t", header="A\tC\tG\tT", comments="")
     write_meme(out_dir / f"{sample_id}.meme", pwm, sample_id)
     summary = {
+        "model_variant": config.get("selected_variant", "custom"),
         "sample_id": sample_id,
         "input": str(input_path),
         "sequence": seq,

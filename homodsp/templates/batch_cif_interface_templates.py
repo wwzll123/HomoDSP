@@ -67,7 +67,7 @@ def run_foldseek(foldseek, query_patch, db_path, out_path, tmp_dir, threads):
     return subprocess.run(cmd, text=True, capture_output=True)
 
 
-def attach_features(query_npz, hits, cif_dir, out_npz, top_k, mode, max_nodes, cutoff, contact_cutoff, aligned_residue_mode):
+def attach_features(query_npz, hits, cif_dir, out_npz, top_k, mode, max_nodes, cutoff, contact_cutoff, aligned_residue_mode, additional_cif_dirs=()):
     old_argv = sys.argv[:]
     script = "attach_cif_interface_gnn_features.py" if mode == "interface" else "attach_cif_direct_complex_template_features.py"
     try:
@@ -80,6 +80,8 @@ def attach_features(query_npz, hits, cif_dir, out_npz, top_k, mode, max_nodes, c
             "--top-k", str(top_k),
         ]
         if mode == "interface":
+            for directory in additional_cif_dirs:
+                sys.argv += ["--additional-cif-dir", str(directory)]
             sys.argv += [
                 "--max-nodes", str(max_nodes),
                 "--cutoff", str(cutoff),
@@ -142,6 +144,7 @@ def process_query(query_id, args_dict, query_cif_map):
         args_dict["cutoff"],
         args_dict["contact_cutoff"],
         args_dict["aligned_residue_mode"],
+        args_dict.get("additional_cif_dir", []),
     )
     return {"query": query_id, "patch": str(patch_path), "hits": str(hits_path), "out": str(out_npz), "skipped": False}
 
@@ -153,6 +156,7 @@ def main():
     parser.add_argument("--query-cif-dir")
     parser.add_argument("--query-cif-map")
     parser.add_argument("--template-cif-dir", required=True)
+    parser.add_argument("--additional-cif-dir", action="append", default=[])
     parser.add_argument("--foldseek-db", required=True)
     parser.add_argument("--foldseek", default="/root/foldseek/bin/foldseek")
     parser.add_argument("--out-dir", required=True)

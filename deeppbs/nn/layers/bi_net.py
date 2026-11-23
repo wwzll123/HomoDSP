@@ -13,7 +13,7 @@ def distance(p1, p2):
     return torch.sqrt(torch.sum(torch.square(p1 - p2), dim=1).unsqueeze(1))
 
 def mask_edge_index(edge_index):
-    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    device = edge_index.device
 
     p_indices = [0,10]# for phosphate
     s_indices = [1,9]# for phosphate
