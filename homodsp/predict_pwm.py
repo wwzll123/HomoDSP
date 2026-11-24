@@ -199,7 +199,7 @@ def attach_templates(base_npz: Path, input_path: Path, sample_id: str, out_dir: 
     return augmented
 
 
-def predict_one_member(npz_path: Path, model_cfg: dict, member_cfg: dict, device: torch.device) -> tuple[np.ndarray, str]:
+def predict_one_member(npz_path: Path, model_cfg: dict, member_cfg: dict, device: torch.device, error_estimator=None) -> tuple[np.ndarray, str]:
     member_name = member_cfg.get("name", "model")
     checkpoint = resolve_path(member_cfg.get("checkpoint"))
     scaler_path = resolve_path(member_cfg.get("scaler"))
@@ -261,7 +261,8 @@ def predict_one_member(npz_path: Path, model_cfg: dict, member_cfg: dict, device
     seq = oneHotToSeq(batch.y_hard0.data.cpu().numpy())
     with torch.no_grad():
         batch_data = processBatch(device, batch)
-        raw = model(batch_data["batch"])
+        raw = (model(batch_data["batch"]) if error_estimator is None
+               else error_estimator.forward(model, batch_data, member_name))
         logits = raw["logits"] if isinstance(raw, dict) else raw
         probs = torch.softmax(logits, dim=1).detach().cpu().numpy()
     midpoint = probs.shape[0] // 2
@@ -270,7 +271,7 @@ def predict_one_member(npz_path: Path, model_cfg: dict, member_cfg: dict, device
     return pwm, seq
 
 
-def predict_npz(npz_path: Path, sample_id: str, out_dir: Path, config: dict, device_name: str) -> tuple[np.ndarray, str]:
+def predict_npz(npz_path: Path, sample_id: str, out_dir: Path, config: dict, device_name: str, error_estimator=None) -> tuple[np.ndarray, str]:
     model_cfg = config["model"]
     device = torch.device(device_name if device_name else ("cuda:0" if torch.cuda.is_available() else "cpu"))
     ensemble = model_cfg.get("ensemble")
@@ -286,7 +287,7 @@ def predict_npz(npz_path: Path, sample_id: str, out_dir: Path, config: dict, dev
     pwms = []
     seq = None
     for member_cfg in ensemble:
-        member_pwm, member_seq = predict_one_member(npz_path, model_cfg, member_cfg, device)
+        member_pwm, member_seq = predict_one_member(npz_path, model_cfg, member_cfg, device, error_estimator)
         if seq is None:
             seq = member_seq
         elif member_seq != seq:
@@ -336,13 +337,21 @@ def main() -> None:
                             template_scores=np.zeros(slots, dtype=np.float32),
                             template_node_feature_names=np.asarray(FEATURE_NAMES))
 
-    pwm, seq = predict_npz(infer_npz, sample_id, out_dir, config, args.device)
+    estimator = None
+    if (config.get("selected_variant") == "template-dna" and not args.skip_templates
+            and config["templates"]["top_k"] == 16):
+        from homodsp.uncertainty import FoldErrorEstimator
+        hits = work_dir / "template_search" / "hits" / f"{sample_id}.tsv"
+        estimator = FoldErrorEstimator(infer_npz, hits, REPO_ROOT / "checkpoints/uq")
+    pwm, seq = predict_npz(infer_npz, sample_id, out_dir, config, args.device, estimator)
+    error_output = {} if estimator is None else {"predicted_mean_fold_mae": estimator.mean_fold_mae()}
     np.save(out_dir / f"{sample_id}_pwm.npy", pwm)
-    np.savez_compressed(out_dir / f"{sample_id}_prediction.npz", P=pwm, Seq=seq, source_npz=str(infer_npz))
+    np.savez_compressed(out_dir / f"{sample_id}_prediction.npz", P=pwm, Seq=seq, source_npz=str(infer_npz), **error_output)
     write_pwm_csv(out_dir / f"{sample_id}_pwm.csv", pwm)
     np.savetxt(out_dir / f"{sample_id}_pwm.tsv", pwm, delimiter="\t", header="A\tC\tG\tT", comments="")
     write_meme(out_dir / f"{sample_id}.meme", pwm, sample_id)
     summary = {
+        **error_output,
         "model_variant": config.get("selected_variant", "custom"),
         "sample_id": sample_id,
         "input": str(input_path),
