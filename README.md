@@ -23,7 +23,7 @@ Outputs:
 - `<sample>.meme`: MEME-format motif.
 - `<sample>_summary.json`: paths and inferred DNA sequence.
 
-The standard `template-dna` run also writes `predicted_mean_fold_mae` to the
+The `template-dna` run also writes `predicted_mean_fold_mae` to the
 summary JSON and prediction NPZ. It estimates the mean error of the five
 individual fold models. Each fold's error is the sum of absolute A/C/G/T
 probability differences at each DNA position, averaged over positions and both
@@ -34,18 +34,18 @@ separate error. No experimental PWM is needed for inference.
 
 Two independently trained five-fold checkpoint sets are included:
 
-- [HomoDSP with template DNA identity](checkpoints/template-dna) (`template-dna`, default).
+- [HomoDSP with template DNA identity](checkpoints/template-dna) (`template-dna`).
 - [HomoDSP without template DNA identity](checkpoints/no-template-dna) (`no-template-dna`).
 
 Both use homologous templates and omit explicit query DNA identity. Each fold
 includes its best checkpoint and feature scalers. Inference averages the PWM
 probabilities from all five folds.
 
-The [UQ weights](checkpoints/uq) are included for the standard `template-dna`
+The [UQ weights](checkpoints/uq) are included for the `template-dna`
 configuration (FULL retrieval, up to 16 templates). Sample- and position-level
 regressors use frozen model representations and predictions from two auxiliary
 models: query-only HomoDSP and [DeepPBS](https://github.com/timkartar/DeepPBS).
-All auxiliary parameters are bundled. The `no-template-dna` variant, other
+All auxiliary parameters are bundled. The `no-template-dna` model, other
 template limits, and `--skip-templates` produce PWM outputs without a UQ estimate.
 
 The template library
